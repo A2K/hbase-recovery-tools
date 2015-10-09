@@ -1,0 +1,21 @@
+#!/bin/bash
+
+DIR=$(cd $(dirname "$0") && pwd)
+HBASE=/usr/lib/hbase-0.90.5/
+
+cd "${DIR}"
+
+CLASSPATH=${DIR}/target/classes:${DIR}/lib/*:${HBASE}/*:${HBASE}/lib/*
+
+TOOL=$1
+
+if find "${DIR}/target/classes" -name "${TOOL}.class" >/dev/null 2>&1
+then
+  java -cp ${CLASSPATH} com.ambrella.${TOOL} ${@:2}
+else
+  echo "Usage: TOOL args..."
+  echo "Available tools: "
+  find "${DIR}/target/classes" -name \*.class | cut -d'.' -f1
+  exit 0
+fi
+

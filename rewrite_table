@@ -1,0 +1,48 @@
+#!/bin/bash
+
+if [ -z "$1" ]
+then
+  echo "usage: $0 TABLE"
+  exit 1
+fi
+
+TABLE="$1"
+
+MVOPS="${TABLE}/rewrite_move_ops.sh"
+REGIONS="${TABLE}/corrupted_regions"
+
+mkdir -p "${TABLE}"
+echo "#!/bin/bash -e -x\n" > "${MVOPS}"
+chmod +x "${MVOPS}"
+
+hadoop fsck "/hbase/${TABLE}" -FILES -BLOCKS | grep 'CORRUPT block' | grep '^/' | cut -d':' -f1 | sort -u > "${REGIONS}"
+
+REGIONS_COUNT=$(cat "${REGIONS}" | wc -l)
+PROCESSED_COUNT=0
+
+cat "${REGIONS}" | while read region
+do
+
+  echo "processing file: ${region} ($((${PROCESSED_COUNT}+1)) of ${REGIONS_COUNT})"
+
+  blockId=$(echo "$region" | cut -d/ -f6)
+  regionId=$(echo "$region" | cut -d/ -f4)
+
+  BASE_NAME="${regionId}_${blockId}"
+
+  MISING_BLOCKS_LOG="${TABLE}/${BASE_NAME}.missing.log"
+
+  RESTORED="/tmp/conversion_${TABLE}/${BASE_NAME}.RESTORED"
+  ORIGINAL_BACKUP="/tmp/conversion_${TABLE}/${BASE_NAME}.ORIGINAL"
+
+  ./hbaserescue DataRewrite "$region" "${RESTORED}" "${MISING_BLOCKS_LOG}"
+
+  echo "hadoop fs -mv \"$region\" \"${ORIGINAL_BACKUP}\"" >> ${MVOPS}
+  echo "hadoop fs -mv \"${RESTORED}\" \"$region\"" >> ${MVOPS}
+
+  PROCESSED_COUNT=$((${PROCESSED_COUNT}+1))
+
+done
+
+echo "Finished."
+

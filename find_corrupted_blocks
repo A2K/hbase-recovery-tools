@@ -1,0 +1,12 @@
+#!/bin/bash
+
+if [ -z $1 ]
+then
+  echo "usage: $0 PATH"
+  exit 1
+fi
+
+PATH=$1
+
+hadoop fsck "${PATH}" -FILES -BLOCKS | grep 'CORRUPT block' | grep '^/' | cut -d':' -f1 | sort -u
+

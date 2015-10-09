@@ -1,0 +1,19 @@
+#!/bin/bash
+
+
+PATH=$1
+if [ -z "${PATH}" ]
+then
+  echo "usage: $0 PATH"
+fi
+
+tmp=/tmp/${TABLE}_sizes
+
+hadoop fsck "${PATH}" -FILES -BLOCKS | grep 'CORRUPT block' | grep '^/' | cut -d':' -f1 | sort -u > "${tmp}"
+byteCount=`cat "${tmp}" | sort -u | xargs hadoop fs -ls | grep "${PATH}/" | awk '{print $5}' | awk '{ sum += $1 } END { print sum }'`
+rm -f "${tmp}"
+
+gigs=`echo "${byteCount}/1024/1024/1024" | bc`
+
+echo "total size: ${byteCount} bytes (${gigs} GB)"
+
