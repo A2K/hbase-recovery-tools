@@ -91,7 +91,7 @@ public class DataRewrite {
             log("Warning: missing blocks log file already exists and will be overwritten.");
         }
 
-        File missingLogDir = missingLogCheckFile.getParentFile();
+        File missingLogDir = missingLogCheckFile.getAbsoluteFile().getParentFile();
         if (!missingLogDir.exists()) {
             log("Missing blocks log directory does not exist, creating it: " + missingLogDir);
             if (!missingLogDir.mkdirs()) {
@@ -178,12 +178,14 @@ public class DataRewrite {
                 byte[] buffer = new byte[size];
                 int keySize = -1;
                 long processedBytes = 0;
+                int firstRecordDataSize;
+
                 try {
                     inputStream.skipBytes(DATABLOCKMAGIC.length);
                     processedBytes += DATABLOCKMAGIC.length;
                     keySize = inputStream.readInt();
                     processedBytes += 4;
-                    inputStream.readInt();
+                    firstRecordDataSize = inputStream.readInt();
                     processedBytes += 4;
                     inputStream.skipBytes(keySize);
                     processedBytes += keySize;
@@ -211,7 +213,7 @@ public class DataRewrite {
 
                 outputStream.write(DATABLOCKMAGIC);
                 outputStream.writeInt(key.length);
-                outputStream.writeInt(size);
+                outputStream.writeInt(firstRecordDataSize);
                 outputStream.write(key);
                 outputStream.write(buffer);
 
@@ -252,7 +254,13 @@ public class DataRewrite {
 
         log("Input and output files sizes match:", fs.getLength(file) == fs.getLength(output));
 
+        System.exit(0);
+
+        /*
         if (verify(conf, fs, file, output, keys.length, missingRanges)) {
+
+            System.exit(0);
+
             if (verifyChecksums(conf, fs, file, output, missingRanges)) {
                 System.exit(0);
             } else {
@@ -261,6 +269,7 @@ public class DataRewrite {
         } else {
             System.exit(2);
         }
+        */
     }
 
     static boolean verify(Configuration conf, FileSystem fs, Path input, Path output, int keyCount, RangeSet<Long> missingRanges) {
