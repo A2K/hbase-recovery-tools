@@ -8,27 +8,17 @@ import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.io.hfile.HFile;
-import org.apache.hadoop.hbase.io.hfile.HFileScanner;
-import org.apache.hadoop.hbase.regionserver.StoreFile;
 
 import java.io.IOException;
-import java.lang.reflect.Field;
-import java.text.DecimalFormat;
-import java.text.SimpleDateFormat;
 import java.util.Arrays;
-import java.util.Date;
+
+import static com.ambrella.Log.log;
+import static com.ambrella.Utils.readHFileIndex;
 
 public class DataComparison {
 
-    public static final String TAG = DataComparison.class.getName();
-
-    final static byte[] DATABLOCKMAGIC = {'D', 'A', 'T', 'A', 'B', 'L', 'K', 42};
-
-
-    public static void main(String[] args)  {
+    public static void main(String[] args) {
 
         if (args.length != 2) {
             log("args: INPUT_FILE OUTPUT_FILE");
@@ -39,30 +29,23 @@ public class DataComparison {
         Path input = new Path(args[0]);
         Path output = new Path(args[1]);
 
-        Configuration conf = HBaseConfiguration.create();
-
-        conf.set("hbase.zookeeper.quorum", "mtae1,rdaf3,rdaf2,rdaf1,mtae2");
-
-        conf.addResource(new Path("/etc/hadoop-0.20/conf/core-site.xml"));
-        conf.addResource(new Path("/etc/hadoop-0.20/conf/hdfs-site.xml"));
-        conf.addResource(new Path("/usr/lib/hbase/conf/hbase-site.xml"));
-        conf.set("dfs.block.size", "268435456");
+        Configuration conf = Config.Hadoop.makeConfig();
 
         try {
             compareFiles(conf, input, output);
-        } catch(Exception e) {
+        } catch (Exception e) {
             log("UNEXPECTED EXCEPTION:");
             e.printStackTrace();
             System.exit(2);
         }
     }
 
-    public static void compareFiles(Configuration conf, Path input, Path output) throws IOException, IllegalAccessException, NoSuchFieldException, ClassNotFoundException{
+    public static void compareFiles(Configuration conf, Path input, Path output) throws IOException, IllegalAccessException, NoSuchFieldException, ClassNotFoundException {
 
         FileSystem fs = input.getFileSystem(conf);
 
-        Index inputIndex = readIndex(conf, input);
-        Index outputIndex = readIndex(conf, output);
+        Utils.Index inputIndex = readHFileIndex(conf, input);
+        Utils.Index outputIndex = readHFileIndex(conf, output);
 
         if (inputIndex == null || outputIndex == null) {
             log("ERROR: failed to read index");
@@ -99,67 +82,55 @@ public class DataComparison {
                 continue;
             }
 
-            Block inputBlock = null;
+            HFileDataBlock inputDataBlock = HFileDataBlock.read(inputStream, (int) inputIndex.getSize(i));
+            HFileDataBlock outputDataBlock = HFileDataBlock.read(outputStream, (int) outputIndex.getSize(i));
 
-            try {
-                inputStream.seek(inputIndex.getOffset(i));
-                inputBlock = readBlock(inputStream, (int) inputIndex.getSize(i));
-            } catch (BlockReadError exception) {
+            if (inputDataBlock.getRecords().size() != outputDataBlock.getRecords().size()) {
+                log("ERROR: record count does not match in data block index=" + i);
+                System.exit(2);
+            }
 
-                BlockLocation[] locations = fs.getFileBlockLocations(fs.getFileStatus(input),
-                        inputIndex.getOffset(i) + exception.getBytesRead(),
-                        inputIndex.getSize(i) - exception.getBytesRead());
+            inputStream.seek(inputIndex.getOffset(i));
+            outputStream.seek(outputIndex.getOffset(i));
 
-                for (BlockLocation loc : locations) {
-                    Range<Long> range = Range.<Long>closed(loc.getOffset(), loc.getOffset() + loc.getLength());
-                    missingRanges.add(range);
-                    log("skipping input blocks in non-readable range:", range);
+            for (int j = 0; j < inputDataBlock.getRecords().size(); ++j) {
+                HFileDataBlockRecord inputBlock;
+                HFileDataBlockRecord outputBlock;
+                try {
+                    inputBlock = inputDataBlock.getRecords().get(j);
+                    outputBlock = outputDataBlock.getRecords().get(j);
+                } catch (IOException exception) {
+
+                    BlockLocation[] locations = fs.getFileBlockLocations(fs.getFileStatus(input),
+                            inputIndex.getOffset(i),
+                            inputIndex.getSize(i));
+
+                    for (BlockLocation loc : locations) {
+                        Range<Long> range = Range.<Long>closed(loc.getOffset(), loc.getOffset() + loc.getLength());
+                        missingRanges.add(range);
+                        log("skipping input blocks in non-readable range:", range);
+                    }
+
+                    i -= 1;
+                    continue;
                 }
 
-                i -= 1;
-                continue;
+                if (!Arrays.equals(inputBlock.key, outputBlock.key)) {
+                    log("ERROR: block keys do not match key index=" + i + ":", KeyValue.keyToString(inputBlock.key), "!=", KeyValue.keyToString(outputBlock.key));
+                    System.exit(2);
+                }
+
+                if (inputBlock.data.length != outputBlock.data.length) {
+                    log("blocks data sizes do not match:", inputBlock.data.length, "!=", outputBlock.data.length);
+                    System.exit(2);
+                }
+
+                if (!Arrays.equals(inputBlock.data, outputBlock.data)) {
+                    log("ERROR: block data does not match key index=" + i);
+                    System.exit(2);
+                }
             }
 
-            Block outputBlock = null;
-
-            try {
-                outputStream.seek(outputIndex.getOffset(i));
-                outputBlock = readBlock(outputStream, (int) outputIndex.getSize(i));
-            } catch (BlockReadError blockReadError) {
-                log("ERROR: failed to read output file block:");
-                blockReadError.getReadException().printStackTrace();
-                System.exit(2);
-            }
-
-            if (!Arrays.equals(inputBlock.getMagic(), DATABLOCKMAGIC)) {
-                log("input block magic bytes don't match DATABLOCKMAGIC");
-                System.exit(2);
-            }
-
-            if (!Arrays.equals(outputBlock.getMagic(), DATABLOCKMAGIC)) {
-                log("output block magic bytes don't match DATABLOCKMAGIC");
-                System.exit(2);
-            }
-
-            if (inputBlock.getFirstKeyDataLength() != outputBlock.getFirstKeyDataLength()) {
-                log("first key data length does not match in block index=" + i);
-                System.exit(2);
-            }
-
-            if (!Arrays.equals(inputBlock.getKey(), outputBlock.getKey())) {
-                log("ERROR: block keys do not match key index=" + i + ":", inputBlock.getKeyString(), "!=", outputBlock.getKeyString());
-                System.exit(2);
-            }
-
-            if (inputBlock.getData().length != outputBlock.getData().length) {
-                log("blocks data sizes do not match:", inputBlock.getData().length, "!=", outputBlock.getData().length);
-                System.exit(2);
-            }
-
-            if (!Arrays.equals(inputBlock.getData(), outputBlock.getData())) {
-                log("ERROR: block data does not match key index=" + i + ":", inputBlock.getKeyString(), "!=", outputBlock.getKeyString());
-                System.exit(2);
-            }
         }
 
         log("VERIFICATION SUCCEEDED");
@@ -226,7 +197,7 @@ public class DataComparison {
 
         try {
             long pos = stream.getPos();
-            byte[] magic = new byte[DATABLOCKMAGIC.length];
+            byte[] magic = new byte[C.DATABLOCKMAGIC.length];
             stream.readFully(magic);
             bytesRead += magic.length;
             stream.seek(pos + bytesRead);
@@ -255,94 +226,4 @@ public class DataComparison {
 
     }
 
-    private static HFileScanner makeScanner(Path input, Configuration conf, FileSystem fs) throws IOException {
-        HFile.Reader inputReader = new HFile.Reader(fs, input, StoreFile.getBlockCache(conf), false);
-        inputReader.loadFileInfo();
-        HFileScanner scanner = inputReader.getScanner(false, false);
-        if (!scanner.seekTo()) {
-            log("ERROR: HFileScanner can not seekTo() on", input);
-        }
-        return scanner;
-    }
-
-    static class Index {
-
-        final byte[][] keys;
-        final long[] offsets;
-        final int[] sizes;
-
-        Index(byte[][] keys, long[] offsets, int[] sizes) {
-            this.keys = keys;
-            this.offsets = offsets;
-            this.sizes = sizes;
-        }
-
-        long getLength() {
-            return keys.length;
-        }
-
-        byte[] getKey(int index) {
-            return keys[index];
-        }
-
-        long getOffset(int index) {
-            return offsets[index];
-        }
-
-        long getSize(int index) {
-            return sizes[index];
-        }
-
-    }
-
-    private static Index readIndex(Configuration conf, Path filepath) throws IllegalAccessException, ClassNotFoundException, NoSuchFieldException, IOException {
-        HFile.Reader reader = new HFile.Reader(filepath.getFileSystem(conf), filepath, StoreFile.getBlockCache(conf), false);
-
-        reader.loadFileInfo();
-
-        Field blockIndexField = null;
-        try {
-            blockIndexField = reader.getClass().getDeclaredField("blockIndex");
-        } catch (NoSuchFieldException e) {
-            log("Cloud not get HFile$BlockIndex class: " + e.getMessage());
-            return null;
-        }
-
-        blockIndexField.setAccessible(true);
-        Object blockIndex = blockIndexField.get(reader);
-
-        Class<?> c = Class.forName(HFile.class.getName() + "$BlockIndex");
-
-        Field bkeys = c.getDeclaredField("blockKeys");
-        bkeys.setAccessible(true);
-        byte[][] keys = (byte[][]) bkeys.get(blockIndex);
-
-        Field boffsets = c.getDeclaredField("blockOffsets");
-        boffsets.setAccessible(true);
-        long[] offsets = (long[]) boffsets.get(blockIndex);
-
-        Field bsizes = c.getDeclaredField("blockDataSizes");
-        bsizes.setAccessible(true);
-        int[] sizes = (int[]) bsizes.get(blockIndex);
-
-        return new Index(keys, offsets, sizes);
-    }
-
-    public static String formatFileSize(long size) {
-        if (size <= 0) return "0";
-        final String[] units = new String[]{"B", "kB", "MB", "GB", "TB"};
-        int digitGroups = (int) (Math.log10(size) / Math.log10(1024));
-        return new DecimalFormat("#,##0.#").format(size / Math.pow(1024, digitGroups)) + " " + units[digitGroups];
-    }
-
-    static void log(Object... objects) {
-        String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z").format(new Date());
-
-        System.out.print(time + " ");
-
-        for (Object object : objects) {
-            System.out.print(object.toString() + " ");
-        }
-        System.out.println();
-    }
 }

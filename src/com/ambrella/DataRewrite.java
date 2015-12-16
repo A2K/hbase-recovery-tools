@@ -5,7 +5,6 @@ import com.google.common.collect.RangeSet;
 import com.google.common.collect.TreeRangeSet;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.*;
-import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.io.hfile.HFileScanner;
@@ -20,18 +19,17 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
-import java.text.DecimalFormat;
-import java.text.SimpleDateFormat;
-import java.util.*;
+import java.util.Arrays;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+
+import static com.ambrella.Log.log;
+import static com.ambrella.Utils.formatFileSize;
 
 public class DataRewrite {
 
-    public static final String TAG = DataRewrite.class.getName();
     private static ClientProtocol namenode = null;
-
-    final static byte[] DATABLOCKMAGIC = {'D', 'A', 'T', 'A', 'B', 'L', 'K', 42};
-
-    final byte[] TRAILERBLOCKMAGIC = {'T', 'R', 'A', 'B', 'L', 'K', 34, 36};
 
     public static List<LocatedBlock> findMissingBlocks(String path, long fileLength, Configuration conf) throws IOException {
 
@@ -70,14 +68,7 @@ public class DataRewrite {
             System.exit(1);
         }
 
-        Configuration conf = HBaseConfiguration.create();
-
-        conf.set("hbase.zookeeper.quorum", "mtae1,rdaf3,rdaf2,rdaf1,mtae2");
-
-        conf.addResource(new Path("/etc/hadoop-0.20/conf/core-site.xml"));
-        conf.addResource(new Path("/etc/hadoop-0.20/conf/hdfs-site.xml"));
-        conf.addResource(new Path("/usr/lib/hbase/conf/hbase-site.xml"));
-        conf.set("dfs.block.size", "268435456");
+        Configuration conf = Config.Hadoop.makeConfig();
 
         Path file = new Path(args[0]);
 
@@ -154,7 +145,7 @@ public class DataRewrite {
         for (int i = 0; i < keys.length; ++i) {
             byte[] key = keys[i];
             int size = sizes[i];
-            size -= key.length + 4 + 4 + DATABLOCKMAGIC.length;
+            size -= key.length + 4 + 4 + C.DATABLOCKMAGIC.length;
 
             inputStream.seek(offsets[i]);
 
@@ -167,7 +158,7 @@ public class DataRewrite {
                 missingLog.write(KeyValue.keyToString(key).getBytes());
                 missingLog.write("\n".getBytes());
 
-                outputStream.write(DATABLOCKMAGIC);
+                outputStream.write(C.DATABLOCKMAGIC);
                 outputStream.writeInt(key.length);
                 outputStream.writeInt(size);
                 outputStream.write(key);
@@ -181,8 +172,8 @@ public class DataRewrite {
                 int firstRecordDataSize;
 
                 try {
-                    inputStream.skipBytes(DATABLOCKMAGIC.length);
-                    processedBytes += DATABLOCKMAGIC.length;
+                    inputStream.skipBytes(C.DATABLOCKMAGIC.length);
+                    processedBytes += C.DATABLOCKMAGIC.length;
                     keySize = inputStream.readInt();
                     processedBytes += 4;
                     firstRecordDataSize = inputStream.readInt();
@@ -211,7 +202,7 @@ public class DataRewrite {
                     continue;
                 }
 
-                outputStream.write(DATABLOCKMAGIC);
+                outputStream.write(C.DATABLOCKMAGIC);
                 outputStream.writeInt(key.length);
                 outputStream.writeInt(firstRecordDataSize);
                 outputStream.write(key);
@@ -354,21 +345,4 @@ public class DataRewrite {
         return true;
     }
 
-    public static String formatFileSize(long size) {
-        if(size <= 0) return "0";
-        final String[] units = new String[] { "B", "kB", "MB", "GB", "TB" };
-        int digitGroups = (int) (Math.log10(size)/Math.log10(1024));
-        return new DecimalFormat("#,##0.#").format(size/Math.pow(1024, digitGroups)) + " " + units[digitGroups];
-    }
-
-    static void log(Object... objects) {
-        String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z").format(new Date());
-
-        System.out.print(time + " ");
-
-        for (Object object : objects) {
-            System.out.print(object.toString() + " ");
-        }
-        System.out.println();
-    }
 }
